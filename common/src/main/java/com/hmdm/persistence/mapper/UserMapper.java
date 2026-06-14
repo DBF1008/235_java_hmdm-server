@@ -62,7 +62,7 @@ public interface UserMapper {
     @Update({"UPDATE users " +
             "SET name = #{name}, login=#{login}, email=#{email}, userRoleId=#{userRole.id}, " +
             "allDevicesAvailable=#{allDevicesAvailable}, allConfigAvailable=#{allConfigAvailable}, " +
-            "passwordReset=#{passwordReset}, authData=#{authData}, twoFactorSecret=#{twoFactorSecret}, " +
+            "authData=#{authData}, twoFactorSecret=#{twoFactorSecret}, " +
             "twoFactorAccepted=#{twoFactorAccepted} " +
             "WHERE id=#{id}"})
     void updateUserMainDetails(User user);
@@ -76,6 +76,12 @@ public interface UserMapper {
     @Update({"UPDATE users SET password=#{newPassword}, passwordReset=#{passwordReset}, " +
             "authToken=#{authToken}, passwordResetToken=#{passwordResetToken} WHERE id=#{id}"})
     void setNewPassword(User user);
+
+    // Updates only the password-reset state (flag + token); never touches the password or auth token.
+    // Used when a password reset is requested for an existing, otherwise unchanged account.
+    @Update({"UPDATE users SET passwordReset=#{passwordReset}, passwordResetToken=#{passwordResetToken} " +
+            "WHERE id=#{id}"})
+    void setPasswordResetToken(User user);
 
     @Update({"UPDATE users SET lastLoginFail=#{lastLoginFail} WHERE id=#{id}"})
     void setLoginFailTime(User user);

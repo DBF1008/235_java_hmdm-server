@@ -36,6 +36,7 @@ import com.hmdm.security.SecurityContext;
 import com.hmdm.security.SecurityException;
 import com.hmdm.util.CryptoUtil;
 import com.hmdm.util.PasswordUtil;
+import com.hmdm.auth.AccountStateService;
 import org.mybatis.guice.transactional.Transactional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -74,6 +75,7 @@ public class UnsecureDAO {
     private final File filesDirectory;
     private final int orgAdminRoleId;
     private final EventService eventService;
+    private final AccountStateService accountStateService;
 
     private static final int DEFAULT_CUSTOMER_ID = 1;
 
@@ -95,6 +97,7 @@ public class UnsecureDAO {
                        ConfigurationFileMapper configurationFileMapper,
                        CustomerMapper customerMapper,
                        EventService eventService,
+                       AccountStateService accountStateService,
                        @Named("files.directory") String filesDirectory,
                        @Named("role.orgadmin.id") int orgAdminRoleId,
                        @Named("launcher.package") String defaultLauncherPackage) {
@@ -112,6 +115,7 @@ public class UnsecureDAO {
         this.configurationFileMapper = configurationFileMapper;
         this.customerMapper = customerMapper;
         this.eventService = eventService;
+        this.accountStateService = accountStateService;
         this.filesDirectory = new File(filesDirectory);
         this.orgAdminRoleId = orgAdminRoleId;
         this.defaultLauncherPackage = defaultLauncherPackage;
@@ -135,6 +139,44 @@ public class UnsecureDAO {
 
     public User findByPasswordResetToken( String token ) {
         return userMapper.findByPasswordResetToken(token);
+    }
+
+    /**
+     * <p>Looks up the user owning the given password-reset token, but only if the token is still valid (not expired).
+     * Returns {@code null} for unknown or expired tokens, so callers get a single, uniform "invalid token" answer.</p>
+     *
+     * @param token a password-reset token.
+     * @return the matching user, or {@code null} if the token is unknown or expired.
+     */
+    public User findValidPasswordResetUser(String token) {
+        if (accountStateService.isRecoveryTokenExpired(token)) {
+            return null;
+        }
+        return userMapper.findByPasswordResetToken(token);
+    }
+
+    /**
+     * <p>Starts a password-reset request for an existing user: raises the reset flag and stores a fresh single-use
+     * recovery token, without changing the password or the auth token.</p>
+     *
+     * @param user the user requesting a reset.
+     */
+    public void beginPasswordReset(User user) {
+        accountStateService.requirePasswordReset(user);
+        userMapper.setPasswordResetToken(user);
+    }
+
+    /**
+     * <p>Completes a password reset using the unified account-state transition: stores the new password hash, clears
+     * the (now consumed) reset token and reset flag, and issues a fresh auth token so that the login flow and the
+     * profile-update flow stay in sync. The reset token cannot be reused afterwards.</p>
+     *
+     * @param user the user whose password is being reset.
+     * @param newPasswordHash the already-hashed new password.
+     */
+    public void completePasswordReset(User user, String newPasswordHash) {
+        accountStateService.completePasswordReset(user, newPasswordHash);
+        userMapper.setNewPassword(user);
     }
 
     public List<User> findAllWithOldPassword() {
@@ -467,7 +509,9 @@ public class UnsecureDAO {
             User user = new User();
             user.setCustomerId(customer.getId());
             user.setPassword(PasswordUtil.getHashFromMd5(passwordMD5));
-            user.setAuthToken(PasswordUtil.generateToken());
+            // Unified account-state setup: self sign-up produces an immediately active account (auth token set,
+            // no pending reset). Using the same transition as every other creation path keeps them from diverging.
+            accountStateService.initializeNewUser(user, false);
             user.setLogin(customer.getName());
             user.setName(customer.getName());
             user.setEmail(customer.getEmail());

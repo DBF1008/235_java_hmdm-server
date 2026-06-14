@@ -26,6 +26,7 @@ import javax.inject.Singleton;
 import com.hmdm.persistence.CustomerDAO;
 import com.hmdm.util.BackgroundTaskRunnerService;
 import com.hmdm.util.PasswordUtil;
+import com.hmdm.auth.AccountStateService;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiResponse;
@@ -73,6 +74,8 @@ public class JWTAuthResource {
 
     private BackgroundTaskRunnerService taskRunner;
 
+    private AccountStateService accountStateService;
+
     /**
      * <p>A constructor required by Swagger.</p>
      */
@@ -86,11 +89,13 @@ public class JWTAuthResource {
     public JWTAuthResource(TokenProvider tokenProvider,
                            UnsecureDAO userDAO,
                            CustomerDAO customerDAO,
-                           BackgroundTaskRunnerService taskRunner) {
+                           BackgroundTaskRunnerService taskRunner,
+                           AccountStateService accountStateService) {
         this.tokenProvider = tokenProvider;
         this.userDAO = userDAO;
         this.customerDAO = customerDAO;
         this.taskRunner = taskRunner;
+        this.accountStateService = accountStateService;
     }
 
     // =================================================================================================================
@@ -134,8 +139,8 @@ public class JWTAuthResource {
                 });
 
                 if (user.getAuthToken() == null || user.getAuthToken().length() == 0) {
-                    user.setAuthToken(PasswordUtil.generateToken());
-                    user.setNewPassword(user.getPassword());        // copy value for setUserNewPasswordUnsecure
+                    accountStateService.ensureAuthToken(user);
+                    user.setNewPassword(user.getPassword());        // preserve current password for the setNewPassword update
                     userDAO.setUserNewPasswordUnsecure(user);
                 }
                 user.setPassword(null);

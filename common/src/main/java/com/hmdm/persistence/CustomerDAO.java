@@ -42,6 +42,7 @@ import com.hmdm.persistence.mapper.CustomerMapper;
 import com.hmdm.security.SecurityContext;
 import com.hmdm.security.SecurityException;
 import com.hmdm.util.CryptoUtil;
+import com.hmdm.auth.AccountStateService;
 
 import java.io.File;
 import java.io.IOException;
@@ -76,6 +77,7 @@ public class CustomerDAO {
     private final ApplicationSettingDAO applicationSettingDAO;
     private final int orgAdminRoleId;
     private final EventService eventService;
+    private final AccountStateService accountStateService;
 
     @Inject
     public CustomerDAO(CustomerMapper mapper,
@@ -87,7 +89,8 @@ public class CustomerDAO {
                        ApplicationSettingDAO applicationSettingDAO,
                        @Named("files.directory") String filesDirectory,
                        @Named("role.orgadmin.id") int orgAdminRoleId,
-                       EventService eventService) {
+                       EventService eventService,
+                       AccountStateService accountStateService) {
         this.mapper = mapper;
         this.configurationMapper = configurationMapper;
         this.applicationMapper = applicationMapper;
@@ -98,6 +101,7 @@ public class CustomerDAO {
         this.applicationSettingDAO = applicationSettingDAO;
         this.orgAdminRoleId = orgAdminRoleId;
         this.eventService = eventService;
+        this.accountStateService = accountStateService;
     }
 
     public void removeCustomerById(Integer id) {
@@ -195,11 +199,9 @@ public class CustomerDAO {
             User user = new User();
             user.setCustomerId(customer.getId());
             user.setPassword(PasswordUtil.getHashFromRaw(password));
-            user.setAuthToken(PasswordUtil.generateToken());
-            if (masterSettings.isPasswordReset()) {
-                user.setPasswordReset(true);
-                user.setPasswordResetToken(PasswordUtil.generateToken());
-            }
+            // Unified account-state setup: issues the auth token and, when the master settings require it,
+            // puts the new account into the "must reset password" state with a single-use recovery token.
+            this.accountStateService.initializeNewUser(user, masterSettings.isPasswordReset());
             user.setLogin(transliterate(customer.getName()));
             user.setName(customer.getMainUserName());
             user.setEmail(customer.getEmail());
