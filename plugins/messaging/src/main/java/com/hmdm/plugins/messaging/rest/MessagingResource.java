@@ -291,18 +291,29 @@ public class MessagingResource {
     // =================================================================================================================
     @ApiOperation(
             value = "Sets the message status",
-            notes = "Marks message as delivered or read."
+            notes = "Marks message as delivered or read. Requires deviceNumber to scope the update to the correct customer."
     )
     @GET
     @Path("/public/status/{id}/{status}")
     @Produces(MediaType.APPLICATION_JSON)
-    public Response setMessageStatus(@PathParam("id") Integer id, @PathParam("status") Integer status) {
+    public Response setMessageStatus(@PathParam("id") Integer id,
+                                     @PathParam("status") Integer status,
+                                     @QueryParam("deviceNumber") String deviceNumber) {
         if (status == null || status < 0 || status > Message.STATUS_READ) {
             logger.error("Wrong status " + status + " for message id " + id);
             return Response.ERROR();
         }
+        if (deviceNumber == null || deviceNumber.trim().isEmpty()) {
+            logger.error("Missing deviceNumber parameter while updating message status for message id " + id);
+            return Response.ERROR("deviceNumber is required");
+        }
         try {
-            this.messagingDAO.updateMessageStatus(id, status);
+            Device device = this.unsecureDAO.getDeviceByNumber(deviceNumber);
+            if (device == null) {
+                logger.error("Device {} was not found while updating message status for message id {}", deviceNumber, id);
+                return Response.DEVICE_NOT_FOUND_ERROR();
+            }
+            this.messagingDAO.updateMessageStatus(id, status, device.getCustomerId());
             return Response.OK();
         } catch (Exception e) {
             logger.error("Unexpected error when marking the message " + id + " as read", e);

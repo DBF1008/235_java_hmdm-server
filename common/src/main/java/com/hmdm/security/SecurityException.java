@@ -47,6 +47,15 @@ public class SecurityException extends RuntimeException {
     }
 
     /**
+     * <p>Gets the error code identifying the type of error.</p>
+     *
+     * @return an error code.
+     */
+    public int getErrorCode() {
+        return errorCode;
+    }
+
+    /**
      * <p>Constructs an exception to be thrown in case an unauthorized access to specified customerData is detected.</p>
      *
      * @param customerData a source of the exception.

@@ -85,6 +85,9 @@
 
     <sql id="dynamicDataConditions">
         WHERE p.deviceId = #{deviceId}
+        <if test="customerId != 0">
+            AND p.customerId = #{customerId}
+        </if>
         <if test="useFixedInterval">
             AND (p.ts &gt;= (EXTRACT(EPOCH FROM NOW()) - #{fixedInterval}) * 1000)
         </if>

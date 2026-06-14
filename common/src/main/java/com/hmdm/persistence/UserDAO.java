@@ -79,12 +79,15 @@ public class UserDAO extends AbstractDAO<User> {
     }
 
     /**
-     * UNSECURE! Should be called by super-admin or admin only!
-     * Make sure permissions are checked before calling this method
-     * @param user
+     * <p>Inserts a new user record. Requires super-admin or org-admin role.</p>
+     *
+     * @param user a user to insert.
      */
-
     public void insert(User user) {
+        User currentUser = SecurityContext.get().getCurrentUser().orElse(null);
+        if (currentUser == null || (!currentUser.getUserRole().isSuperAdmin() && !isOrgAdmin(currentUser))) {
+            throw SecurityException.onAdminDataAccessViolation("insert user");
+        }
         this.mapper.insert(user);
         if (!user.isAllDevicesAvailable()) {
             List<LookupItem> groups = user.getGroups();

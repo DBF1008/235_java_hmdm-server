@@ -43,11 +43,11 @@ public interface MessageMapper {
             keyColumn = "id", keyProperty = "id", before = false, resultType = int.class )
     int insertMessage(Message msg);
 
-    @Update("UPDATE plugin_messaging_messages SET status = #{status} WHERE id = #{id}")
-    int updateMessageStatus(@Param("id") int id, @Param("status") int status);
+    @Update("UPDATE plugin_messaging_messages SET status = #{status} WHERE id = #{id} AND customerId = #{customerId}")
+    int updateMessageStatus(@Param("id") int id, @Param("status") int status, @Param("customerId") int customerId);
 
-    @Delete("DELETE FROM plugin_messaging_messages WHERE id = #{id}")
-    void deleteMessage(@Param("id") int id);
+    @Delete("DELETE FROM plugin_messaging_messages WHERE id = #{id} AND customerId = #{customerId}")
+    void deleteMessage(@Param("id") int id, @Param("customerId") int customerId);
 
     void purgeOldMessages(@Param("ts") long ts, @Param("customerId") int customerId);
 

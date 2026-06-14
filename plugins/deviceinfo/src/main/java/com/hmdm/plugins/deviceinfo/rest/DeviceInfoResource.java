@@ -263,6 +263,7 @@ public class DeviceInfoResource {
             }
 
             filter.setDeviceId(dbDevice.getId());
+            filter.setCustomerId(SecurityContext.get().getCurrentCustomerId().orElse(0));
 
             final List<DeviceDynamicInfoRecord> items = this.deviceInfoDAO.searchDynamicData(filter);
             long count = this.deviceInfoDAO.countAllDynamicData(filter);
@@ -303,6 +304,7 @@ public class DeviceInfoResource {
             }
 
             request.setDeviceId(dbDevice.getId());
+            request.setCustomerId(SecurityContext.get().getCurrentCustomerId().orElse(0));
 
             String fileName = request.getDeviceNumber();
             ContentDisposition contentDisposition = ContentDisposition.type("attachment")

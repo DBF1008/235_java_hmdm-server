@@ -106,22 +106,25 @@ public class MessagingDAO extends AbstractDAO<Message> {
     }
 
     /**
-     * <p>Updates the message status (sets as read)</p>
+     * <p>Updates the message status (sets as read), scoped to specified customer to prevent cross-tenant updates.</p>
      *
      * @param id message identifier
      * @param status new status
+     * @param customerId the customer scope for this update
      */
-    public void updateMessageStatus(int id, int status) {
-        this.messageMapper.updateMessageStatus(id, status);
+    public void updateMessageStatus(int id, int status, int customerId) {
+        this.messageMapper.updateMessageStatus(id, status, customerId);
     }
 
     /**
-     * <p>Deletes the message</p>
+     * <p>Deletes the message, scoped to current customer to prevent cross-tenant deletion.</p>
      *
      * @param id message identifier
      */
     public void deleteMessage(int id) {
-        this.messageMapper.deleteMessage(id);
+        SecurityContext.get().getCurrentUser().ifPresent(user -> {
+            this.messageMapper.deleteMessage(id, user.getCustomerId());
+        });
     }
 
     /**

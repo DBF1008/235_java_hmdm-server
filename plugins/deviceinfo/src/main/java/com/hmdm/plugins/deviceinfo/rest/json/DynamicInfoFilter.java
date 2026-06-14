@@ -34,12 +34,15 @@ import java.util.Date;
  * @author isv
  */
 @ApiModel(description = "A request for searching the dynamic info records for device")
-@JsonIgnoreProperties(value = {"deviceId"}, ignoreUnknown = true)
+@JsonIgnoreProperties(value = {"deviceId", "customerId"}, ignoreUnknown = true)
 public class DynamicInfoFilter implements Serializable {
 
     private static final long serialVersionUID = 1321492463446573290L;
     @ApiModelProperty(hidden = true)
     private int deviceId;
+
+    @ApiModelProperty(hidden = true)
+    private int customerId;
 
     /**
      * <p>A device identifier.</p>
@@ -89,6 +92,14 @@ public class DynamicInfoFilter implements Serializable {
 
     public void setDeviceId(int deviceId) {
         this.deviceId = deviceId;
+    }
+
+    public int getCustomerId() {
+        return customerId;
+    }
+
+    public void setCustomerId(int customerId) {
+        this.customerId = customerId;
     }
 
     public int getPageSize() {

@@ -357,10 +357,22 @@ public class CustomerDAO {
     }
 
     public Customer findById(int customerId) {
+        if (!SecurityContext.get().isSuperAdmin()) {
+            Integer currentCustomerId = SecurityContext.get().getCurrentCustomerId().orElse(null);
+            if (currentCustomerId == null || currentCustomerId != customerId) {
+                throw SecurityException.onAdminDataAccessViolation("view customer " + customerId);
+            }
+        }
         return mapper.findCustomerById(customerId);
     }
 
     public Customer findByIdForUpdate(int customerId) {
+        if (!SecurityContext.get().isSuperAdmin()) {
+            Integer currentCustomerId = SecurityContext.get().getCurrentCustomerId().orElse(null);
+            if (currentCustomerId == null || currentCustomerId != customerId) {
+                throw SecurityException.onAdminDataAccessViolation("view customer " + customerId);
+            }
+        }
         return mapper.findCustomerByIdForUpdate(customerId);
     }
 
