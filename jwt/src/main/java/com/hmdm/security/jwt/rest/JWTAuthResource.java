@@ -24,6 +24,7 @@ package com.hmdm.security.jwt.rest;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import com.hmdm.persistence.CustomerDAO;
+import com.hmdm.service.AuthService;
 import com.hmdm.util.BackgroundTaskRunnerService;
 import com.hmdm.util.PasswordUtil;
 import io.swagger.annotations.Api;
@@ -73,6 +74,8 @@ public class JWTAuthResource {
 
     private BackgroundTaskRunnerService taskRunner;
 
+    private AuthService authService;
+
     /**
      * <p>A constructor required by Swagger.</p>
      */
@@ -86,11 +89,13 @@ public class JWTAuthResource {
     public JWTAuthResource(TokenProvider tokenProvider,
                            UnsecureDAO userDAO,
                            CustomerDAO customerDAO,
-                           BackgroundTaskRunnerService taskRunner) {
+                           BackgroundTaskRunnerService taskRunner,
+                           AuthService authService) {
         this.tokenProvider = tokenProvider;
         this.userDAO = userDAO;
         this.customerDAO = customerDAO;
         this.taskRunner = taskRunner;
+        this.authService = authService;
     }
 
     // =================================================================================================================
@@ -129,15 +134,19 @@ public class JWTAuthResource {
                 Thread.sleep(1000);
                 return Response.status(Response.Status.UNAUTHORIZED).build();
             } else {
+                // Record last login time for the customer
                 this.taskRunner.submitTask(() -> {
                     this.customerDAO.recordLastLoginTime(user.getCustomerId(), System.currentTimeMillis());
                 });
 
-                if (user.getAuthToken() == null || user.getAuthToken().length() == 0) {
-                    user.setAuthToken(PasswordUtil.generateToken());
-                    user.setNewPassword(user.getPassword());        // copy value for setUserNewPasswordUnsecure
-                    userDAO.setUserNewPasswordUnsecure(user);
+                // Clear brute-force guard on successful login
+                if (user.getLastLoginFail() != 0) {
+                    userDAO.setUserLoginFailTime(user, 0);
                 }
+
+                // Ensure user has an authToken (generates one if missing)
+                authService.ensureAuthToken(user);
+
                 user.setPassword(null);
 
                 String token = tokenProvider.createToken(user, false);

@@ -77,6 +77,9 @@ public interface UserMapper {
             "authToken=#{authToken}, passwordResetToken=#{passwordResetToken} WHERE id=#{id}"})
     void setNewPassword(User user);
 
+    @Update({"UPDATE users SET passwordReset=true, passwordResetToken=#{passwordResetToken} WHERE id=#{id}"})
+    void initiatePasswordReset(User user);
+
     @Update({"UPDATE users SET lastLoginFail=#{lastLoginFail} WHERE id=#{id}"})
     void setLoginFailTime(User user);
 

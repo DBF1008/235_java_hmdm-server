@@ -153,6 +153,20 @@ public class UnsecureDAO {
         userMapper.setNewPassword(user);
     }
 
+    public void initiatePasswordResetUnsecure(User user) {
+        userMapper.initiatePasswordReset(user);
+    }
+
+    /**
+     * Activates a customer account after email verification during self-signup.
+     * Sets signupStatus to "active" and clears the signupToken.
+     */
+    public void activateCustomerUnsecure(Customer customer) {
+        customer.setSignupStatus("active");
+        customer.setSignupToken(null);
+        customerMapper.update(customer);
+    }
+
     public void setUserLoginFailTime(User user, long ts) {
         user.setLastLoginFail(ts);
         userMapper.setLoginFailTime(user);
