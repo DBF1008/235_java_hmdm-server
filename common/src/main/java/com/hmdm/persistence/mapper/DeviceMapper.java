@@ -92,8 +92,45 @@ public interface DeviceMapper {
 
     @Select({"SELECT COUNT(*) " +
             "FROM devices " +
-            "WHERE devices.lastUpdate >= extract(epoch from now()) * 1000 - 3600000"})
-    Long countOnlineDevices();
+            "WHERE devices.lastUpdate >= #{onlineBoundary}"})
+    Long countOnlineDevices(@Param("onlineBoundary") long onlineBoundary);
+
+    /**
+     * Gets a unified status summary (green/yellow/red counts) for the specified customer,
+     * using the provided absolute epoch-millis boundaries to ensure consistency with
+     * {@link com.hmdm.persistence.domain.DeviceOnlineStatus} thresholds.
+     */
+    List<com.hmdm.rest.json.ChartItem> getStatusSummaryUnified(@Param("customerId") int customerId,
+                                                                @Param("userId") int userId,
+                                                                @Param("onlineBoundary") long onlineBoundary,
+                                                                @Param("staleBoundary") long staleBoundary);
+
+    /**
+     * Counts the total number of devices for the specified customer (no user-access filtering).
+     * Used by scheduled tasks for customer-level aggregation.
+     */
+    @Select({"SELECT COUNT(*) FROM devices WHERE customerId = #{customerId}"})
+    Long countDevicesForCustomer(@Param("customerId") int customerId);
+
+    /**
+     * Counts online devices for the specified customer using the unified threshold.
+     * Used by scheduled tasks for customer-level aggregation.
+     */
+    @Select({"SELECT COUNT(*) FROM devices " +
+            "WHERE customerId = #{customerId} AND lastUpdate >= #{onlineBoundary}"})
+    Long countOnlineDevicesForCustomer(@Param("customerId") int customerId,
+                                        @Param("onlineBoundary") long onlineBoundary);
+
+    /**
+     * Counts stale (yellow) devices for the specified customer using the unified thresholds.
+     * Used by scheduled tasks for customer-level aggregation.
+     */
+    @Select({"SELECT COUNT(*) FROM devices " +
+            "WHERE customerId = #{customerId} " +
+            "AND lastUpdate >= #{staleBoundary} AND lastUpdate < #{onlineBoundary}"})
+    Long countStaleDevicesForCustomer(@Param("customerId") int customerId,
+                                      @Param("onlineBoundary") long onlineBoundary,
+                                      @Param("staleBoundary") long staleBoundary);
 
     Long countAllDevices(DeviceSearchRequest filter);
 

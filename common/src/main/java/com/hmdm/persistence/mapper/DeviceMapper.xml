@@ -102,8 +102,8 @@
             CASE
                 WHEN 'STATUS' = #{sortBy} THEN
                     (CASE
-                        WHEN (EXTRACT(EPOCH FROM NOW()) * 1000 - devices.lastupdate) &lt; (2 * 3600 * 1000) THEN '1_green'
-                        WHEN (EXTRACT(EPOCH FROM NOW()) * 1000 - devices.lastupdate) &lt; (4 * 3600 * 1000) THEN '2_yellow'
+                        WHEN devices.lastupdate >= #{onlineBoundary} THEN '1_green'
+                        WHEN devices.lastupdate >= #{staleBoundary} THEN '2_yellow'
                         ELSE '3_red'
                     END)::VARCHAR(100)
                 WHEN 'LAST_UPDATE' = #{sortBy} THEN devices.lastUpdate::VARCHAR(100)
@@ -257,8 +257,8 @@
                applications.pkg AS launcherPkg,
                applicationVersions.version AS launcherVersion,
                CASE
-                   WHEN (EXTRACT(EPOCH FROM NOW()) * 1000 - devices.lastupdate) &lt; (2 * 3600 * 1000) THEN 'green'
-                   WHEN (EXTRACT(EPOCH FROM NOW()) * 1000 - devices.lastupdate) &lt; (4 * 3600 * 1000) THEN 'yellow'
+                   WHEN devices.lastupdate >= #{onlineBoundary} THEN 'green'
+                   WHEN devices.lastupdate >= #{staleBoundary} THEN 'yellow'
                    ELSE 'red'
                END AS statusCode
         FROM devices
@@ -445,6 +445,50 @@
         GROUP BY configurations.id
         ORDER BY counter DESC
         LIMIT 5;
+    </select>
+
+    <select id="getStatusSummaryUnified" resultType="com.hmdm.rest.json.ChartItem">
+        SELECT t.stringAttr, t.number
+        FROM (
+            SELECT 'green' AS stringAttr, 1 AS sort_order,
+                   COUNT(DISTINCT devices.id) AS number
+            FROM devices
+            INNER JOIN users ON users.id = #{userId}
+            LEFT JOIN deviceGroups ON devices.id = deviceGroups.deviceId
+            LEFT JOIN groups ON deviceGroups.groupId = groups.id
+            LEFT JOIN userDeviceGroupsAccess access ON groups.id = access.groupId AND access.userId = users.id
+            WHERE devices.customerId = #{customerId}
+              AND devices.lastUpdate >= #{onlineBoundary}
+              AND (users.allDevicesAvailable = TRUE OR NOT access.id IS NULL)
+
+            UNION ALL
+
+            SELECT 'yellow' AS stringAttr, 2 AS sort_order,
+                   COUNT(DISTINCT devices.id) AS number
+            FROM devices
+            INNER JOIN users ON users.id = #{userId}
+            LEFT JOIN deviceGroups ON devices.id = deviceGroups.deviceId
+            LEFT JOIN groups ON deviceGroups.groupId = groups.id
+            LEFT JOIN userDeviceGroupsAccess access ON groups.id = access.groupId AND access.userId = users.id
+            WHERE devices.customerId = #{customerId}
+              AND devices.lastUpdate >= #{staleBoundary}
+              AND devices.lastUpdate &lt; #{onlineBoundary}
+              AND (users.allDevicesAvailable = TRUE OR NOT access.id IS NULL)
+
+            UNION ALL
+
+            SELECT 'red' AS stringAttr, 3 AS sort_order,
+                   COUNT(DISTINCT devices.id) AS number
+            FROM devices
+            INNER JOIN users ON users.id = #{userId}
+            LEFT JOIN deviceGroups ON devices.id = deviceGroups.deviceId
+            LEFT JOIN groups ON deviceGroups.groupId = groups.id
+            LEFT JOIN userDeviceGroupsAccess access ON groups.id = access.groupId AND access.userId = users.id
+            WHERE devices.customerId = #{customerId}
+              AND devices.lastUpdate &lt; #{staleBoundary}
+              AND (users.allDevicesAvailable = TRUE OR NOT access.id IS NULL)
+        ) t
+        ORDER BY t.sort_order
     </select>
 
 

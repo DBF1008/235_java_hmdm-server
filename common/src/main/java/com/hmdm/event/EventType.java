@@ -32,7 +32,8 @@ public enum EventType {
     DEVICE_LOCATION_UPDATED(DeviceLocationUpdatedEvent.class),
     DEVICE_INFO_UPDATED(DeviceInfoUpdatedEvent.class),
     CONFIGURATION_UPDATED(ConfigurationUpdatedEvent.class),
-    CUSTOMER_CREATED(CustomerCreatedEvent.class);
+    CUSTOMER_CREATED(CustomerCreatedEvent.class),
+    CUSTOMER_STATUS_UPDATED(CustomerStatusUpdatedEvent.class);
 
     /**
      * <p>A type of the event.</p>

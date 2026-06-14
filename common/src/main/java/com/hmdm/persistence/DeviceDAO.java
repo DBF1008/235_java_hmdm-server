@@ -36,7 +36,6 @@ import com.hmdm.persistence.domain.*;
 import com.hmdm.rest.json.*;
 import com.hmdm.service.DeviceApplicationsStatus;
 import com.hmdm.service.DeviceConfigFilesStatus;
-import org.apache.commons.math3.stat.descriptive.summary.Sum;
 import org.mybatis.guice.transactional.Transactional;
 import com.hmdm.persistence.mapper.DeviceMapper;
 import com.hmdm.security.SecurityContext;
@@ -89,7 +88,7 @@ public class DeviceDAO extends AbstractDAO<Device> {
 
     // UNSECURE, for sending stats (by superadmin in multi-tenant setup) only
     public long getOnlineDevicesCount() {
-        return this.mapper.countOnlineDevices();
+        return this.mapper.countOnlineDevices(DeviceOnlineStatus.getOnlineBoundary());
     }
 
     public long getTotalDevicesCount(User user,
@@ -126,6 +125,8 @@ public class DeviceDAO extends AbstractDAO<Device> {
             request.setCustomerId(currentUser.getCustomerId());
             request.setUserId(currentUser.getId());
             request.setPageSize(1000000);
+            request.setOnlineBoundary(DeviceOnlineStatus.getOnlineBoundary());
+            request.setStaleBoundary(DeviceOnlineStatus.getStaleBoundary());
             return this.mapper.getAllDevices(request);
         });
         return devices;
@@ -135,6 +136,8 @@ public class DeviceDAO extends AbstractDAO<Device> {
         List<Device> devices = getListWithCurrentUser(currentUser -> {
             request.setCustomerId(currentUser.getCustomerId());
             request.setUserId(currentUser.getId());
+            request.setOnlineBoundary(DeviceOnlineStatus.getOnlineBoundary());
+            request.setStaleBoundary(DeviceOnlineStatus.getStaleBoundary());
             return this.mapper.getAllDevices(request);
         });
 
@@ -293,34 +296,10 @@ public class DeviceDAO extends AbstractDAO<Device> {
     public List<ChartItem> getStatusSummary() {
         return SecurityContext.get().getCurrentUser()
                 .map(u -> {
-                    DeviceSummaryRequest filter = new DeviceSummaryRequest(
-                        u.getId(), u.getCustomerId(),
-                        null, null, null, null, null, null, null
-                    );
-                    long now = System.currentTimeMillis();
-                    List<ChartItem> result = new LinkedList<>();
-
-                    ChartItem item1 = new ChartItem();
-                    item1.setStringAttr("green");
-                    filter.setMinOnlineTime(now - 3600*1000l);
-                    item1.setNumber(this.mapper.countAllDevicesForSummary(filter));
-                    result.add(item1);
-
-                    ChartItem item2 = new ChartItem();
-                    item2.setStringAttr("yellow");
-                    filter.setMinOnlineTime(now - 3600*4000l);
-                    filter.setMaxOnlineTime(now - 3600*1000l);
-                    item2.setNumber(this.mapper.countAllDevicesForSummary(filter));
-                    result.add(item2);
-
-                    ChartItem item3 = new ChartItem();
-                    item3.setStringAttr("red");
-                    filter.setMinOnlineTime(0l);
-                    filter.setMaxOnlineTime(now - 3600*1000l);
-                    item3.setNumber(this.mapper.countAllDevicesForSummary(filter));
-                    result.add(item3);
-
-                    return result;
+                    long onlineBoundary = DeviceOnlineStatus.getOnlineBoundary();
+                    long staleBoundary = DeviceOnlineStatus.getStaleBoundary();
+                    return this.mapper.getStatusSummaryUnified(
+                            u.getCustomerId(), u.getId(), onlineBoundary, staleBoundary);
                 })
                 .orElse(null);
     }

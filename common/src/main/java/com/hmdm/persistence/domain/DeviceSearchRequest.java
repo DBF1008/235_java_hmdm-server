@@ -149,6 +149,22 @@ public class DeviceSearchRequest implements Serializable {
     @ApiModelProperty("Flag of fast searching by device number")
     private boolean fastSearch;
 
+    /**
+     * <p>Absolute epoch-millis boundary for ONLINE (green) status classification.
+     * Set internally by DAO using {@link DeviceOnlineStatus#getOnlineBoundary()}.
+     * Devices with {@code lastUpdate >= onlineBoundary} are green.</p>
+     */
+    @ApiModelProperty(hidden = true)
+    private long onlineBoundary;
+
+    /**
+     * <p>Absolute epoch-millis boundary for STALE (yellow) status classification.
+     * Set internally by DAO using {@link DeviceOnlineStatus#getStaleBoundary()}.
+     * Devices with {@code staleBoundary <= lastUpdate < onlineBoundary} are yellow.</p>
+     */
+    @ApiModelProperty(hidden = true)
+    private long staleBoundary;
+
     public DeviceSearchRequest() {
     }
 
@@ -331,6 +347,22 @@ public class DeviceSearchRequest implements Serializable {
 
     public void setFastSearch(boolean fastSearch) {
         this.fastSearch = fastSearch;
+    }
+
+    public long getOnlineBoundary() {
+        return onlineBoundary;
+    }
+
+    public void setOnlineBoundary(long onlineBoundary) {
+        this.onlineBoundary = onlineBoundary;
+    }
+
+    public long getStaleBoundary() {
+        return staleBoundary;
+    }
+
+    public void setStaleBoundary(long staleBoundary) {
+        this.staleBoundary = staleBoundary;
     }
 
     public long getDateFromMillis() {
