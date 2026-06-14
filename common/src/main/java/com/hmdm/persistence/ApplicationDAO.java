@@ -71,19 +71,25 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
     private final String baseUrl;
     private final String apkTrustedUrl;
     private APKFileAnalyzer apkFileAnalyzer;
+    private final com.hmdm.service.FileUploadService fileUploadService;
+    private final com.hmdm.service.FileHashService fileHashService;
 
     @Inject
     public ApplicationDAO(ApplicationMapper mapper, CustomerDAO customerDAO,
                           @Named("files.directory") String filesDirectory,
                           @Named("base.url") String baseUrl,
                           @Named("apk.trusted.url") String apkTrustedUrl,
-                          APKFileAnalyzer apkFileAnalyzer) {
+                          APKFileAnalyzer apkFileAnalyzer,
+                          com.hmdm.service.FileUploadService fileUploadService,
+                          com.hmdm.service.FileHashService fileHashService) {
         this.mapper = mapper;
         this.customerDAO = customerDAO;
         this.filesDirectory = filesDirectory;
         this.baseUrl = baseUrl;
         this.apkTrustedUrl = apkTrustedUrl;
         this.apkFileAnalyzer = apkFileAnalyzer;
+        this.fileUploadService = fileUploadService;
+        this.fileHashService = fileHashService;
     }
 
     public List<Application> getAllApplications() {
@@ -125,30 +131,29 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
             final int customerId = SecurityContext.get().getCurrentUser().get().getCustomerId();
             Customer customer = customerDAO.findById(customerId);
 
-            File movedFile = null;
             try {
-                movedFile = FileUtil.moveFile(customer, filesDirectory, null, filePath);
-            } catch (FileExistsException e) {
-                FileUtil.deleteFile(customer, filesDirectory, FileUtil.getNameFromTmpPath(filePath));
-                movedFile = FileUtil.moveFile(customer, filesDirectory, null, filePath);
-            }
-            if (movedFile != null) {
-                final String fileName = movedFile.getAbsolutePath();
-                final APKFileDetails apkFileDetails = this.apkFileAnalyzer.analyzeFile(fileName);
+                // Delegate file publishing to FileUploadService
+                com.hmdm.service.PublishedFile publishedFile = fileUploadService.publishApkFile(customer, filePath);
 
-                // If URL is not specified explicitly for new app then set the application URL to reference to that
-                // file
-                if ((application.getUrl() == null || application.getUrl().trim().isEmpty())) {
-                    application.setUrl(FileUtil.createFileUrl(this.baseUrl, customer.getFilesDir(), movedFile.getName()));
+                // Analyze the APK from the published file location
+                final APKFileDetails apkFileDetails = this.apkFileAnalyzer.analyzeFile(
+                        publishedFile.getPhysicalFile().getAbsolutePath());
+
+                // Set URL if not explicitly provided
+                if (application.getUrl() == null || application.getUrl().trim().isEmpty()) {
+                    application.setUrl(publishedFile.getUrl());
+                }
+
+                // Store the computed hash
+                if (application instanceof ApplicationVersion) {
+                    ((ApplicationVersion) application).setApkHash(publishedFile.getSha256Hash());
                 }
 
                 application.setPkg(apkFileDetails.getPkg());
                 application.setVersion(apkFileDetails.getVersion());
-                // APK architecture is determined on a previous step, and can be overridden by user's request
-                //application.setArch(apkFileDetails.getArch());
-            } else {
-                log.error("Could not move the uploaded .apk-file {}", filePath);
-                throw new DAOException("Could not move the uploaded .apk-file");
+            } catch (Exception e) {
+                log.error("Failed to publish APK file: {}", filePath, e);
+                throw new DAOException("Could not publish the uploaded .apk-file: " + e.getMessage());
             }
         }
 
@@ -397,7 +402,7 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
         if (url != null && !url.trim().isEmpty()) {
             final String apkFile = FileUtil.translateURLToLocalFilePath(customer, url, baseUrl);
             if (apkFile != null) {
-                final boolean deleted = FileUtil.deleteFile(customer, filesDirectory, apkFile);
+                final boolean deleted = fileUploadService.unpublishFile(customer, apkFile);
                 if (!deleted) {
                     log.warn("Could not delete the APK-file {} related to deleted application version #{}", apkFile, id);
                 }
@@ -712,7 +717,7 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
 
             turnApplicationIntoCommon_Transaction(id, filesToCopy);
 
-            // Move the files from affected versions
+            // Migrate the files from affected versions using FileUploadService
             filesToCopy.forEach((currentAppFile, newAppFile) -> {
                 if (newAppFile.exists()) {
                     log.warn("Skip copying file: {} -> {} since the target file already exists",
@@ -733,6 +738,19 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
                                     newAppFileDir.toAbsolutePath());
                         } else {
                             Files.copy(currentAppFile.toPath(), newAppFile.toPath());
+                            // Verify integrity after copy
+                            try {
+                                String sourceHash = fileHashService.computeSha256(currentAppFile);
+                                String targetHash = fileHashService.computeSha256(newAppFile);
+                                if (!sourceHash.equals(targetHash)) {
+                                    log.error("Hash mismatch after copy: {} -> {}. Deleting target.",
+                                            currentAppFile.getAbsolutePath(), newAppFile.getAbsolutePath());
+                                    newAppFile.delete();
+                                    return;
+                                }
+                            } catch (IOException hashEx) {
+                                log.warn("Could not verify hash after copy: {}", newAppFile.getAbsolutePath(), hashEx);
+                            }
                             deleteAppFile(currentAppFile);
                         }
                     } catch (IOException e) {
@@ -865,8 +883,7 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
     public int insertApplicationVersion(ApplicationVersion applicationVersion) {
         log.debug("Entering #insertApplicationVersion: application = {}", applicationVersion);
 
-        // If an APK-file was set for new app then make the file available in Files area and parse the app parameters
-        // from it (package ID, version)
+        // If an APK-file was set for new version then publish it via FileUploadService
         final AtomicReference<String> appPkg = new AtomicReference<>();
 
         final String filePath = applicationVersion.getFilePath();
@@ -874,23 +891,17 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
             final int customerId = SecurityContext.get().getCurrentUser().get().getCustomerId();
             Customer customer = customerDAO.findById(customerId);
 
-            File movedFile = null;
             try {
-                movedFile = FileUtil.moveFile(customer, filesDirectory, null, filePath);
-            } catch (FileExistsException e) {
-                FileUtil.deleteFile(customer, filesDirectory, FileUtil.getNameFromTmpPath(filePath));
-                movedFile = FileUtil.moveFile(customer, filesDirectory, null, filePath);
-            }
-            if (movedFile != null) {
-                final String fileName = movedFile.getAbsolutePath();
-                final APKFileDetails apkFileDetails = this.apkFileAnalyzer.analyzeFile(fileName);
+                // Delegate file publishing to FileUploadService
+                com.hmdm.service.PublishedFile publishedFile = fileUploadService.publishApkFile(customer, filePath);
 
-                // If URL is not specified explicitly for new app then set the application URL to reference to that
-                // file
-                if ((applicationVersion.getUrl() == null || applicationVersion.getUrl().trim().isEmpty())) {
-                    String url = FileUtil.createFileUrl(this.baseUrl, customer.getFilesDir(), movedFile.getName());
-                    // Here we check applicationVersion.getArch() because the admin may wish to override
-                    // the automatic selection
+                final APKFileDetails apkFileDetails = this.apkFileAnalyzer.analyzeFile(
+                        publishedFile.getPhysicalFile().getAbsolutePath());
+
+                // Set URL if not explicitly provided
+                if (applicationVersion.getUrl() == null || applicationVersion.getUrl().trim().isEmpty()) {
+                    String url = publishedFile.getUrl();
+                    // Handle architecture-specific URLs
                     if (StringUtil.isEmpty(applicationVersion.getArch())) {
                         applicationVersion.setSplit(false);
                         applicationVersion.setUrl(url);
@@ -903,10 +914,13 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
                     }
                 }
 
+                // Store the computed hash
+                applicationVersion.setApkHash(publishedFile.getSha256Hash());
+
                 applicationVersion.setVersion(apkFileDetails.getVersion());
-            } else {
-                log.error("Could not move the uploaded .apk-file {}", filePath);
-                throw new DAOException("Could not move the uploaded .apk-file");
+            } catch (Exception e) {
+                log.error("Failed to publish APK file: {}", filePath, e);
+                throw new DAOException("Could not publish the uploaded .apk-file: " + e.getMessage());
             }
         }
 

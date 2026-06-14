@@ -36,6 +36,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.inject.Named;
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -108,15 +109,38 @@ public class UploadedFileDAO extends AbstractDAO<UploadedFile> {
     }
 
     /**
-     * <p>Removes new record for the specified uploaded file.</p>
+     * <p>Removes the record for the specified uploaded file and deletes the physical file from disk.</p>
      *
-     * @param fileId an uploaded filed to be removed from DB and disk.
+     * @param fileId an uploaded file to be removed from DB and disk.
      */
     public void remove(int fileId) {
+        final UploadedFile file = this.fileMapper.findById(fileId);
+        if (file != null && !file.isExternal()) {
+            // Delete the physical file before removing the DB record
+            try {
+                final Customer customer = this.customerDAO.findById(file.getCustomerId());
+                if (customer != null) {
+                    final File physicalFile = file.getFileByPath(this.filesDirectory, customer);
+                    if (physicalFile != null && physicalFile.exists()) {
+                        if (!physicalFile.delete()) {
+                            logger.warn("Failed to delete physical file for uploaded file {}: {}",
+                                    fileId, physicalFile.getAbsolutePath());
+                        } else {
+                            logger.info("Deleted physical file for uploaded file {}: {}",
+                                    fileId, physicalFile.getAbsolutePath());
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                logger.warn("Error while attempting to delete physical file for uploaded file {}: {}",
+                        fileId, e.getMessage());
+                // Don't rethrow - still remove the DB record to avoid blocking
+            }
+        }
         updateById(
                 fileId,
                 this.fileMapper::findById,
-                file -> this.fileMapper.delete(file.getId()),
+                f -> this.fileMapper.delete(f.getId()),
                 SecurityException::onUploadedFileAccessViolation);
     }
 

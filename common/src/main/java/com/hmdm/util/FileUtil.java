@@ -27,6 +27,9 @@ import com.hmdm.persistence.domain.Customer;
 import java.io.*;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 /**
  * <p>An utility class for managing the files on local file system.</p>
@@ -55,7 +58,7 @@ public final class FileUtil {
         return File.createTempFile(fileName + TEMP_FILE_DELIMITER, ".temp");
     }
 
-    public static void writeToFile(InputStream uploadedInputStream, String uploadedFileLocation) {
+    public static void writeToFile(InputStream uploadedInputStream, String uploadedFileLocation) throws IOException {
         try (FileOutputStream out = new FileOutputStream(new File(uploadedFileLocation))) {
             byte[] bytes = new byte[1024];
 
@@ -65,9 +68,6 @@ public final class FileUtil {
             }
 
             out.flush();
-
-        } catch (IOException e) {
-            e.printStackTrace();
         }
     }
 
@@ -119,6 +119,12 @@ public final class FileUtil {
             filePath = String.format("%s/%s/%s/%s", filesDirectory, customer.getFilesDir(), localPath, fileName);
         }
         File file = new File(filePath.replace("/", File.separator));
+
+        // Path traversal protection: ensure the target file is within the files directory
+        if (!isSafePath(filesDirectory, file.getAbsolutePath())) {
+            throw new IllegalArgumentException("Unsafe file path detected: " + fileName);
+        }
+
         file.getParentFile().mkdirs();
 
         if (file.exists()) {
@@ -188,7 +194,7 @@ public final class FileUtil {
         byte[] buffer = new byte[1024];
         int count=0;
         while((count = bis.read(buffer,0,1024)) != -1) {
-            stringBuffer.append(new String(buffer, StandardCharsets.UTF_8));
+            stringBuffer.append(new String(buffer, 0, count, StandardCharsets.UTF_8));
         }
         bis.close();
         return stringBuffer.toString();
@@ -212,5 +218,26 @@ public final class FileUtil {
 
     public static boolean isSafePath(String path) {
         return path == null || !path.contains("..");
+    }
+
+    /**
+     * <p>Validates that the target path does not escape the base directory via path traversal.
+     * Uses canonical path normalization to detect attempts like {@code ../../etc/passwd}.</p>
+     *
+     * @param basePath the base directory that all file operations should be confined to.
+     * @param targetPath the target path to validate.
+     * @return {@code true} if the target path is safely within the base directory; {@code false} otherwise.
+     */
+    public static boolean isSafePath(String basePath, String targetPath) {
+        if (basePath == null || targetPath == null) {
+            return false;
+        }
+        try {
+            Path base = Paths.get(basePath).normalize().toAbsolutePath();
+            Path target = Paths.get(targetPath).normalize().toAbsolutePath();
+            return target.startsWith(base);
+        } catch (InvalidPathException e) {
+            return false;
+        }
     }
 }
