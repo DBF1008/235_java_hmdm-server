@@ -125,13 +125,7 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
             final int customerId = SecurityContext.get().getCurrentUser().get().getCustomerId();
             Customer customer = customerDAO.findById(customerId);
 
-            File movedFile = null;
-            try {
-                movedFile = FileUtil.moveFile(customer, filesDirectory, null, filePath);
-            } catch (FileExistsException e) {
-                FileUtil.deleteFile(customer, filesDirectory, FileUtil.getNameFromTmpPath(filePath));
-                movedFile = FileUtil.moveFile(customer, filesDirectory, null, filePath);
-            }
+            File movedFile = FileUtil.moveReplacingExisting(customer, filesDirectory, null, filePath);
             if (movedFile != null) {
                 final String fileName = movedFile.getAbsolutePath();
                 final APKFileDetails apkFileDetails = this.apkFileAnalyzer.analyzeFile(fileName);
@@ -342,13 +336,7 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
         final Integer currentLatestVersionId = application.getLatestVersion();
 
         this.mapper.updateApplicationVersion(applicationVersion);
-        this.mapper.recalculateLatestVersion(application.getId());
-
-        final Integer newLatestVersionId = this.mapper.findById(applicationVersion.getApplicationId()).getLatestVersion();
-        if (!currentLatestVersionId.equals(newLatestVersionId)) {
-            final ApplicationVersion newLatestVersion = this.mapper.findVersionById(newLatestVersionId);
-            doAutoUpdateToApplicationVersion(newLatestVersion);
-        }
+        recalcLatestAndAutoUpdate(application.getId(), currentLatestVersionId);
     }
 
     /**
@@ -385,9 +373,7 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
             final int customerId = SecurityContext.get().getCurrentUser().get().getCustomerId();
             final Customer customer = customerDAO.findById(customerId);
             for (ApplicationVersion version : versions) {
-                removeVersionApk(customer, version.getId(), version.getUrl());
-                removeVersionApk(customer, version.getId(), version.getUrlArmeabi());
-                removeVersionApk(customer, version.getId(), version.getUrlArm64());
+                removeVersionApks(customer, version);
             }
         }
 
@@ -403,6 +389,19 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
                 }
             }
         }
+    }
+
+    /**
+     * <p>Deletes every APK file associated with an application version (the plain package plus the per-architecture
+     * split packages). Centralizes the otherwise copy-pasted triple of {@link #removeVersionApk} calls.</p>
+     *
+     * @param customer the customer account the version belongs to.
+     * @param version the application version whose APK files must be deleted.
+     */
+    private void removeVersionApks(Customer customer, ApplicationVersion version) {
+        removeVersionApk(customer, version.getId(), version.getUrl());
+        removeVersionApk(customer, version.getId(), version.getUrlArmeabi());
+        removeVersionApk(customer, version.getId(), version.getUrlArm64());
     }
 
     public List<ApplicationConfigurationLink> getApplicationConfigurations(Integer id) {
@@ -809,14 +808,9 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
 
             this.mapper.removeApplicationVersionById(id);
 
-            // Recalculate latest version for application if necessary
+            // Recalculate latest version for application if the removed version was the latest one
             if (dbApplication.getLatestVersion() != null && dbApplication.getLatestVersion().equals(id)) {
-                this.mapper.recalculateLatestVersion(dbApplication.getId());
-                final Application application = this.mapper.findById(dbApplication.getId());
-                if (application.getLatestVersion() != null) {
-                    final ApplicationVersion latestVersion = this.mapper.findVersionById(application.getLatestVersion());
-                    doAutoUpdateToApplicationVersion(latestVersion);
-                }
+                recalcLatestAndAutoUpdate(dbApplication.getId(), id);
             }
 
 
@@ -842,15 +836,9 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
             return;
         }
 
-        final String url = version.getUrl();
-        final String urlArmeabi = version.getUrlArmeabi();
-        final String urlArm64 = version.getUrlArm64();
-
         this.removeApplicationVersionById(id);
 
-        removeVersionApk(customer, id, url);
-        removeVersionApk(customer, id, urlArmeabi);
-        removeVersionApk(customer, id, urlArm64);
+        removeVersionApks(customer, version);
     }
 
     /**
@@ -874,13 +862,7 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
             final int customerId = SecurityContext.get().getCurrentUser().get().getCustomerId();
             Customer customer = customerDAO.findById(customerId);
 
-            File movedFile = null;
-            try {
-                movedFile = FileUtil.moveFile(customer, filesDirectory, null, filePath);
-            } catch (FileExistsException e) {
-                FileUtil.deleteFile(customer, filesDirectory, FileUtil.getNameFromTmpPath(filePath));
-                movedFile = FileUtil.moveFile(customer, filesDirectory, null, filePath);
-            }
+            File movedFile = FileUtil.moveReplacingExisting(customer, filesDirectory, null, filePath);
             if (movedFile != null) {
                 final String fileName = movedFile.getAbsolutePath();
                 final APKFileDetails apkFileDetails = this.apkFileAnalyzer.analyzeFile(fileName);
@@ -985,7 +967,7 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
 
                 fileToCopyCollector.put(currentAppFile, newAppFile);
 
-                return this.baseUrl + "/files/" + newAppCustomer.getFilesDir() + "/" + relativeFilePath;
+                return FileUrlUtil.buildFileUrl(this.baseUrl, newAppCustomer.getFilesDir(), relativeFilePath);
             } else {
                 log.warn("Invalid application URL does not contain the base directory for customer files: {}" ,
                         currentApplicationUrl);
@@ -1016,6 +998,24 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
         log.debug("Auto-updated {} application links for configurations", autoUpdatedConfigAppsCount);
         log.debug("Auto-updated main application for {} configurations", autoUpdatedMainAppsCount);
         log.debug("Auto-updated content application for {} configurations", autoUpdatedContentAppsCount);
+    }
+
+    /**
+     * <p>Recomputes the application's latest version after a version was added, changed or removed and, when the latest
+     * version actually changed, propagates that change to the configurations that follow it. Centralizing this sequence
+     * keeps the "most recent version" pointer and the version delivered to devices from drifting apart &mdash; the root
+     * cause of the management side showing a new version while devices still receive the old one.</p>
+     *
+     * @param applicationId the application whose latest version must be recomputed.
+     * @param previousLatestVersionId the latest-version id observed before the mutation (may be {@code null}).
+     */
+    private void recalcLatestAndAutoUpdate(Integer applicationId, Integer previousLatestVersionId) {
+        this.mapper.recalculateLatestVersion(applicationId);
+        final Integer newLatestVersionId = this.mapper.findById(applicationId).getLatestVersion();
+        if (newLatestVersionId != null && !newLatestVersionId.equals(previousLatestVersionId)) {
+            final ApplicationVersion newLatestVersion = this.mapper.findVersionById(newLatestVersionId);
+            doAutoUpdateToApplicationVersion(newLatestVersion);
+        }
     }
 
     /**

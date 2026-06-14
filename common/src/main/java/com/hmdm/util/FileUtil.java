@@ -145,18 +145,28 @@ public final class FileUtil {
 
     }
 
-    public static String translateURLToLocalFilePath(Customer customer, String url, String baseUrl) {
-        final String prefixWithoutCustomer = baseUrl + "/files/";
-        String prefix = prefixWithoutCustomer;
-        if (customer.getFilesDir() != null && !customer.getFilesDir().isEmpty()) {
-            prefix += customer.getFilesDir() + "/";
+    /**
+     * <p>Moves an uploaded temporary file into the customer's files area, transparently replacing any file already
+     * present at the target location. This consolidates the move-then-retry-on-conflict sequence used when
+     * (re)uploading application packages, so that a replaced package always lands at the expected path.</p>
+     *
+     * @param customer the customer account the file belongs to.
+     * @param filesDirectory the base directory holding all files maintained by the application.
+     * @param localPath an optional sub-path within the customer area to move the file to.
+     * @param tmpFilePath the path of the temporary file to move.
+     * @return the moved file, or {@code null} if the move failed.
+     */
+    public static File moveReplacingExisting(Customer customer, String filesDirectory, String localPath, String tmpFilePath) {
+        try {
+            return moveFile(customer, filesDirectory, localPath, tmpFilePath);
+        } catch (FileExistsException e) {
+            deleteFile(customer, filesDirectory, getNameFromTmpPath(tmpFilePath));
+            return moveFile(customer, filesDirectory, localPath, tmpFilePath);
         }
-        if (url.startsWith(prefix)) {
-            final String path = url.substring(prefix.length());
-            return path.replace("/", File.separator);
-        }
+    }
 
-        return null;
+    public static String translateURLToLocalFilePath(Customer customer, String url, String baseUrl) {
+        return FileUrlUtil.urlToRelativePath(baseUrl, customer.getFilesDir(), url);
     }
 
     /**
@@ -174,12 +184,7 @@ public final class FileUtil {
 
     public static String createFileUrl(String baseUrl, String customerDir, String fileName) {
         // TODO: Use files.directory from XML config!
-        String url = baseUrl + "/files/";
-        if (customerDir != null && !customerDir.equals("")) {
-            url += customerDir + "/";
-        }
-        url += fileName;
-        return url;
+        return FileUrlUtil.buildFileUrl(baseUrl, customerDir, fileName);
     }
 
     public static String downloadTextFile(URL url) throws IOException {

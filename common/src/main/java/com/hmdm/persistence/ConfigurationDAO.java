@@ -23,12 +23,7 @@ package com.hmdm.persistence;
 
 import com.google.inject.Inject;
 
-import java.io.IOException;
-import java.net.URL;
-import java.security.NoSuchAlgorithmException;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 import com.google.inject.Singleton;
 import com.hmdm.event.ConfigurationUpdatedEvent;
@@ -145,46 +140,20 @@ public class ConfigurationDAO extends AbstractLinkedDAO<Configuration, Applicati
                         this.mapper.saveConfigurationApplicationUsageParameters(configuration.getId(), configuration.getApplicationUsageParameters());
                     }
 
-                    List<ConfigurationFile> legacyFiles = this.configurationFileDAO.getConfigurationFiles(configuration.getId());
-                    Map<Integer,ConfigurationFile> legacyFilesMap = new HashMap<Integer, ConfigurationFile>();
-                    for (ConfigurationFile file : legacyFiles) {
-                        legacyFilesMap.put(file.getId(), file);
-                    }
-
                     this.mapper.removeConfigurationFilesById(configuration.getId());
                     final List<ConfigurationFile> files = configuration.getFiles();
                     if (files != null && !files.isEmpty()) {
+                        // File readiness is tracked via the uploaded file's upload timestamp (surfaced as lastUpdate),
+                        // so the deprecated per-file checksum is no longer computed here. It was never persisted by
+                        // insertConfigurationFiles nor read back by getConfigurationFiles, and recomputing it opened a
+                        // network connection to every external file on each configuration save.
                         files.forEach(file -> {
                             if (!file.isOverrideDevicePath()) {
                                 file.setDevicePath(null);
                             }
                         });
-                        files.stream()
-                                .filter(file -> file.getExternalUrl() != null)
-                                .forEach(file -> {
-                                    try {
-                                        ConfigurationFile legacyFile = legacyFilesMap.get(file.getId());
-                                        if (legacyFile != null && file.getExternalUrl().equals(legacyFile.getExternalUrl())) {
-                                            file.setChecksum(legacyFile.getChecksum());
-                                        } else {
-                                            final String checksum = CryptoUtil.calculateChecksum(new URL(file.getExternalUrl()).openStream());
-                                            file.setChecksum(checksum);
-                                        }
-                                    } catch (NoSuchAlgorithmException | IOException e) {
-                                        log.error("Failed to calculate checksum for content URL: {}", file.getExternalUrl(), e);
-                                        file.setChecksum("");
-                                    }
-                                });
                         this.mapper.insertConfigurationFiles(configuration.getId(), files);
                     }
-
-                    // Deprecated and not used any more
-/*                    final List<Integer> filesToRemove = config.getFilesToRemove();
-                    if (filesToRemove != null) {
-                        filesToRemove.forEach(fileId -> {
-                            this.configurationFileDAO.removeFileFromDisk(fileId);
-                        });
-                    } */
 
                     this.eventService.fireEvent(new ConfigurationUpdatedEvent(configuration.getId()));
                 },

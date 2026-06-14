@@ -23,6 +23,8 @@ package com.hmdm.util;
 
 import org.apache.commons.lang3.StringUtils;
 
+import java.util.Collection;
+
 /**
  * <p>An utility class for manipulating with application data.</p>
  *
@@ -94,5 +96,89 @@ public final class ApplicationUtil {
      */
     public static String normalizeVersion(String version) {
         return (version == null ? "" : version).replaceAll("[^\\d.]", "");
+    }
+
+    /**
+     * <p>Resolves the application version a configuration actually ships to a device.</p>
+     *
+     * <p>This is the canonical Java definition of the {@code COALESCE(usedVersionId, latestVersion)} rule that the
+     * persistence layer applies when linking an application to a configuration: a configuration delivers the version it
+     * was explicitly pinned to ({@code usedVersionId}), falling back to the application's most recent version
+     * ({@code latestVersion}) when it is not pinned. Keeping this rule in one place stops the management view and the
+     * device-facing sync from disagreeing about which version is current.</p>
+     *
+     * @param usedVersionId the version the configuration is pinned to, or {@code null} if it is not pinned.
+     * @param latestVersionId the most recent version of the application, or {@code null} if unknown.
+     * @return the id of the version that should be delivered to the device, or {@code null} if neither is known.
+     */
+    public static Integer effectiveVersionId(Integer usedVersionId, Integer latestVersionId) {
+        return usedVersionId != null ? usedVersionId : latestVersionId;
+    }
+
+    /**
+     * <p>Tells whether the version a configuration ships is behind the application's most recent version.</p>
+     *
+     * <p>This mirrors the {@code latestVersion <> applicationVersions.id} expression used by the persistence layer,
+     * including its NULL handling: if either the latest version or the shipped version is unknown the result is
+     * {@code false} (nothing is reported as outdated when there is nothing to compare against).</p>
+     *
+     * @param latestVersionId the most recent version of the application.
+     * @param shippedVersionId the version currently shipped by the configuration.
+     * @return {@code true} if a newer version exists than the one being shipped.
+     */
+    public static boolean isOutdated(Integer latestVersionId, Integer shippedVersionId) {
+        return latestVersionId != null && shippedVersionId != null && !latestVersionId.equals(shippedVersionId);
+    }
+
+    /**
+     * <p>Selects the most recent version text from a collection of version texts, using {@link #compareVersions}.</p>
+     *
+     * <p>This is the Java counterpart of the {@code recalculateLatestVersion} persistence routine which picks the
+     * application version with the highest version-comparison index.</p>
+     *
+     * @param versions the available version texts (may contain {@code null} entries, which are ignored).
+     * @return the greatest version text, or {@code null} if there are no non-null versions.
+     */
+    public static String selectLatestVersion(Collection<String> versions) {
+        if (versions == null) {
+            return null;
+        }
+        String latest = null;
+        for (String version : versions) {
+            if (version == null) {
+                continue;
+            }
+            if (latest == null || compareVersions(version, latest) > 0) {
+                latest = version;
+            }
+        }
+        return latest;
+    }
+
+    /**
+     * <p>Selects the version immediately preceding the specified one &mdash; the greatest available version that is
+     * strictly older than {@code current}. This is the target a rollback falls back to when the current version is
+     * withdrawn, and is the Java counterpart of the {@code getPrecedingVersion} persistence routine.</p>
+     *
+     * @param current the version to roll back from.
+     * @param versions the available version texts (may contain {@code null} entries, which are ignored).
+     * @return the greatest version strictly less than {@code current}, or {@code null} if there is no older version.
+     */
+    public static String selectPrecedingVersion(String current, Collection<String> versions) {
+        if (versions == null) {
+            return null;
+        }
+        String preceding = null;
+        for (String version : versions) {
+            if (version == null) {
+                continue;
+            }
+            if (compareVersions(version, current) < 0) {
+                if (preceding == null || compareVersions(version, preceding) > 0) {
+                    preceding = version;
+                }
+            }
+        }
+        return preceding;
     }
 }

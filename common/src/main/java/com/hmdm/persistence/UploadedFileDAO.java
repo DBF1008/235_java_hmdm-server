@@ -29,6 +29,7 @@ import com.hmdm.persistence.domain.UploadedFile;
 import com.hmdm.persistence.mapper.ConfigurationFileMapper;
 import com.hmdm.persistence.mapper.UploadedFileMapper;
 import com.hmdm.rest.json.FileConfigurationLink;
+import com.hmdm.util.ConfigurationFileReconciler;
 import com.hmdm.security.SecurityContext;
 import com.hmdm.security.SecurityException;
 import org.mybatis.guice.transactional.Transactional;
@@ -41,7 +42,6 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * <p>A DAO used for managing the icon data.</p>
@@ -134,26 +134,22 @@ public class UploadedFileDAO extends AbstractDAO<UploadedFile> {
 
     @Transactional
     public void updateFileConfigurations(List<FileConfigurationLink> linkList) {
+        // Single reconciliation rule for the configurationFiles link rows: a link that exists but is no longer
+        // selected is removed, and a selected file that is not yet linked is inserted. Centralizing this in
+        // ConfigurationFileReconciler keeps it consistent with the other write paths and guarantees a de-selected
+        // file leaves no dangling row referencing it.
+        final ConfigurationFileReconciler.Plan<FileConfigurationLink> plan = ConfigurationFileReconciler.reconcile(
+                linkList,
+                link -> link.getId() != null,
+                FileConfigurationLink::isUpload
+        );
 
-        final List<FileConfigurationLink> noUploadLinks = linkList
-                .stream()
-                .filter(c -> c.getId() != null && !c.isUpload())
-                .collect(Collectors.toList());
-        noUploadLinks.forEach(link -> {
-            configurationFileMapper.deleteConfigurationFile(link.getId());
+        plan.getToRemove().forEach(link -> configurationFileMapper.deleteConfigurationFile(link.getId()));
+
+        plan.getToAdd().forEach(link -> {
+            ConfigurationFile cf = new ConfigurationFile(link);
+            configurationFileMapper.insertConfigurationFile(cf);
         });
-
-        final List<FileConfigurationLink> newUploadLinks = linkList
-                .stream()
-                .filter(c -> c.getId() == null && c.isUpload())
-                .collect(Collectors.toList());
-        if (newUploadLinks.size() > 0) {
-            UploadedFile file = getById(newUploadLinks.get(0).getFileId());
-            newUploadLinks.forEach(link -> {
-                ConfigurationFile cf = new ConfigurationFile(link);
-                configurationFileMapper.insertConfigurationFile(cf);
-            });
-        }
     }
 
 }

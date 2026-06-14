@@ -23,6 +23,7 @@ package com.hmdm.persistence.domain;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.hmdm.util.FileUrlUtil;
 import io.swagger.annotations.ApiModel;
 import io.swagger.annotations.ApiModelProperty;
 
@@ -235,12 +236,7 @@ public class UploadedFile implements Serializable, CustomerData {
         if (this.isExternal()) {
             return this.externalUrl;
         }
-        final String customerFilesBaseDir = customer.getFilesDir();
-        if (customerFilesBaseDir != null && !customerFilesBaseDir.isEmpty()) {
-            return String.format("%s/files/%s/%s", baseUrl, customerFilesBaseDir, this.filePath.replace(File.separator, "/"));
-        } else {
-            return String.format("%s/files/%s", baseUrl, this.filePath.replace(File.separator, "/"));
-        }
+        return FileUrlUtil.buildFileUrl(baseUrl, customer.getFilesDir(), this.filePath);
     }
 
     @Override
