@@ -74,7 +74,7 @@ public class UserDAO extends AbstractDAO<User> {
         if (SecurityContext.get().isSuperAdmin()) {
             this.mapper.setNewPassword(user);
         } else {
-            throw new IllegalArgumentException("Super-admin is allowed only");
+            throw SecurityException.onAdminDataAccessViolation("update user password");
         }
     }
 
@@ -161,7 +161,7 @@ public class UserDAO extends AbstractDAO<User> {
         if (SecurityContext.get().isSuperAdmin()) {
             return this.mapper.findAll(customerId);
         } else {
-            throw new IllegalArgumentException("Super-admin is allowed only");
+            throw SecurityException.onAdminDataAccessViolation("list users of another customer");
         }
     }
 

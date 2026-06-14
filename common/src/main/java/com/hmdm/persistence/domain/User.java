@@ -191,7 +191,7 @@ public class User implements CustomerData, Serializable {
     }
 
     public boolean isSuperAdmin() {
-        return this.userRole.isSuperAdmin();
+        return this.userRole != null && this.userRole.isSuperAdmin();
     }
 
     public boolean isAllDevicesAvailable() {

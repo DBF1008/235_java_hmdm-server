@@ -115,19 +115,18 @@ public abstract class AbstractDAO<T extends CustomerData> {
      * @return a record returned by search logic.
      */
     protected T getSingleRecord(Supplier<T> searchLogic, Function<T, SecurityException> exceptionProvider) {
-        Optional<T> recordOpt = Optional.ofNullable(searchLogic.get());
+        T record = searchLogic.get();
 
-        if (recordOpt.isPresent()) {
-            T record = recordOpt.get();
-
-            return SecurityContext.get()
-                    .getCurrentUser()
-                    .filter(u -> u.getCustomerId() == record.getCustomerId())
-                    .map(u -> record)
-                    .orElseThrow(() -> exceptionProvider.apply(record));
-        } else {
+        if (record == null) {
             return null;
         }
+
+        // Tenant/role access is decided in a single place (SecurityContext.canAccess) so that read,
+        // write and linked-data paths all enforce identical customer-scope and super-admin semantics.
+        if (SecurityContext.get().canAccess(record)) {
+            return record;
+        }
+        throw exceptionProvider.apply(record);
     }
 
     /**
@@ -172,12 +171,11 @@ public abstract class AbstractDAO<T extends CustomerData> {
     protected void updateRecord(T record,
                                 Consumer<T> recordUpdateLogic,
                                 Function<T, SecurityException> exceptionProvider) {
-        SecurityContext.get().getCurrentUser()
-                .filter(u -> u.isSuperAdmin() || u.getCustomerId() == record.getCustomerId())
-                .map(u -> {
-                    recordUpdateLogic.accept(record);
-                    return 1;
-                }).orElseThrow(() -> exceptionProvider.apply(record));
+        if (SecurityContext.get().canAccess(record)) {
+            recordUpdateLogic.accept(record);
+        } else {
+            throw exceptionProvider.apply(record);
+        }
     }
 
     /**

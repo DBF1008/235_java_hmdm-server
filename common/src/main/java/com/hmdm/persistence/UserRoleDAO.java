@@ -27,6 +27,7 @@ import com.hmdm.persistence.domain.UserRole;
 import com.hmdm.persistence.domain.UserRolePermission;
 import com.hmdm.persistence.mapper.UserRoleMapper;
 import com.hmdm.security.SecurityContext;
+import com.hmdm.security.SecurityException;
 
 import javax.inject.Named;
 import java.util.List;
@@ -65,7 +66,7 @@ public class UserRoleDAO {
 
     void checkAccess() {
         if (!hasAccess()) {
-            throw new IllegalArgumentException("Operation not allowed");
+            throw SecurityException.onAdminDataAccessViolation("manage user roles");
         }
     }
 

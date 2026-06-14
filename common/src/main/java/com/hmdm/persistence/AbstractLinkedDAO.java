@@ -26,7 +26,6 @@ import com.hmdm.security.SecurityContext;
 import com.hmdm.security.SecurityException;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -61,18 +60,23 @@ public abstract class AbstractLinkedDAO<T extends CustomerData, L extends Custom
                                     Function<Integer, List<L>> listRetrievalLogic,
                                     Function<Integer, SecurityException> exceptionProvider) {
 
-        Optional<T> byId = Optional.ofNullable(findByIdLogic.apply(recordId));
+        T record = findByIdLogic.apply(recordId);
 
-        if (byId.isPresent()) {
-            T record = byId.get();
-            return SecurityContext.get()
-                    .getCurrentUser()
-                    .filter(u -> record.isCommon() || u.getCustomerId() == record.getCustomerId())
-                    .map(u -> listRetrievalLogic.apply(record.isCommon() ? u.getCustomerId() : record.getCustomerId()))
-                    .orElseThrow(() -> exceptionProvider.apply(recordId));
-        } else {
+        if (record == null) {
             throw exceptionProvider.apply(recordId);
         }
+
+        SecurityContext context = SecurityContext.get();
+        if (!context.canAccess(record)) {
+            throw exceptionProvider.apply(recordId);
+        }
+
+        // Common records are shared, so their linked data is read in the scope of the current user's
+        // customer; otherwise the data is read in the scope of the record's own customer.
+        int scopeCustomerId = record.isCommon()
+                ? context.getCurrentCustomerId().orElseThrow(() -> exceptionProvider.apply(recordId))
+                : record.getCustomerId();
+        return listRetrievalLogic.apply(scopeCustomerId);
     }
 
     /**
@@ -89,19 +93,14 @@ public abstract class AbstractLinkedDAO<T extends CustomerData, L extends Custom
                                     Consumer<T> linkedDataUpdateLogic,
                                     Function<Integer, SecurityException> exceptionProvider) {
 
-        Optional<T> byId = Optional.ofNullable(findByIdLogic.apply(recordId));
+        T record = findByIdLogic.apply(recordId);
 
-        if (byId.isPresent()) {
-            T record = byId.get();
+        if (record == null) {
+            throw exceptionProvider.apply(recordId);
+        }
 
-            SecurityContext.get()
-                    .getCurrentUser()
-                    .filter(u -> record.isCommon() || u.getCustomerId() == record.getCustomerId())
-                    .map(u -> {
-                        linkedDataUpdateLogic.accept(record);
-                        return 1;
-                    })
-                    .orElseThrow(() -> exceptionProvider.apply(recordId));
+        if (SecurityContext.get().canAccess(record)) {
+            linkedDataUpdateLogic.accept(record);
         } else {
             throw exceptionProvider.apply(recordId);
         }

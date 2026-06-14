@@ -21,6 +21,7 @@
 
 package com.hmdm.security;
 
+import com.hmdm.persistence.domain.CustomerData;
 import com.hmdm.persistence.domain.User;
 
 import java.util.Optional;
@@ -125,7 +126,27 @@ public class SecurityContext {
      * @return <code>true</code> if current user is granted SUPER ADMIN role; <code>false</code> otherwise.
      */
     public boolean isSuperAdmin() {
-        return getCurrentUser().map(u -> u.getUserRole().isSuperAdmin()).orElse(false);
+        return getCurrentUser().map(User::isSuperAdmin).orElse(false);
+    }
+
+    /**
+     * <p>Checks whether the current request is allowed to access the specified customer-owned record.</p>
+     *
+     * <p>This is the single source of truth for tenant/role access decisions, shared by the read, write and
+     * linked-data paths so they all enforce identical semantics. Access is granted when the current user is a
+     * super admin, or the record is common (shared across customers), or the record belongs to the current
+     * user's customer. Anonymous requests (no current user) and {@code null} records are always denied.</p>
+     *
+     * @param record a customer-owned record to check access for.
+     * @return <code>true</code> if the current user may access the record; <code>false</code> otherwise.
+     */
+    public boolean canAccess(CustomerData record) {
+        if (record == null) {
+            return false;
+        }
+        return getCurrentUser()
+                .map(u -> u.isSuperAdmin() || record.isCommon() || u.getCustomerId() == record.getCustomerId())
+                .orElse(false);
     }
 
     /**
