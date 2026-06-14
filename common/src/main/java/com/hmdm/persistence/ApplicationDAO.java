@@ -24,10 +24,7 @@ package com.hmdm.persistence;
 import com.google.inject.Inject;
 
 import java.io.File;
-import java.io.IOException;
 import java.net.URL;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -46,6 +43,7 @@ import com.hmdm.rest.json.ApplicationVersionConfigurationLink;
 import com.hmdm.rest.json.LinkConfigurationsToAppRequest;
 import com.hmdm.rest.json.LinkConfigurationsToAppVersionRequest;
 import com.hmdm.rest.json.LookupItem;
+import com.hmdm.service.FileUploadService;
 import com.hmdm.util.*;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.glassfish.jersey.jaxb.internal.XmlJaxbElementProvider;
@@ -71,19 +69,22 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
     private final String baseUrl;
     private final String apkTrustedUrl;
     private APKFileAnalyzer apkFileAnalyzer;
+    private final FileUploadService fileUploadService;
 
     @Inject
     public ApplicationDAO(ApplicationMapper mapper, CustomerDAO customerDAO,
                           @Named("files.directory") String filesDirectory,
                           @Named("base.url") String baseUrl,
                           @Named("apk.trusted.url") String apkTrustedUrl,
-                          APKFileAnalyzer apkFileAnalyzer) {
+                          APKFileAnalyzer apkFileAnalyzer,
+                          FileUploadService fileUploadService) {
         this.mapper = mapper;
         this.customerDAO = customerDAO;
         this.filesDirectory = filesDirectory;
         this.baseUrl = baseUrl;
         this.apkTrustedUrl = apkTrustedUrl;
         this.apkFileAnalyzer = apkFileAnalyzer;
+        this.fileUploadService = fileUploadService;
     }
 
     public List<Application> getAllApplications() {
@@ -121,44 +122,48 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
         // If an APK-file was set for new app then make the file available in Files area and parse the app parameters
         // from it (package ID, version)
         final String filePath = application.getFilePath();
-        if (filePath != null && !filePath.trim().isEmpty()) {
-            final int customerId = SecurityContext.get().getCurrentUser().get().getCustomerId();
-            Customer customer = customerDAO.findById(customerId);
+        FileUploadService.PublishedFile publishedFile = null;
+        boolean committed = false;
+        try {
+            if (filePath != null && !filePath.trim().isEmpty()) {
+                final int customerId = SecurityContext.get().getCurrentUser().get().getCustomerId();
+                Customer customer = customerDAO.findById(customerId);
 
-            File movedFile = null;
-            try {
-                movedFile = FileUtil.moveFile(customer, filesDirectory, null, filePath);
-            } catch (FileExistsException e) {
-                FileUtil.deleteFile(customer, filesDirectory, FileUtil.getNameFromTmpPath(filePath));
-                movedFile = FileUtil.moveFile(customer, filesDirectory, null, filePath);
-            }
-            if (movedFile != null) {
-                final String fileName = movedFile.getAbsolutePath();
-                final APKFileDetails apkFileDetails = this.apkFileAnalyzer.analyzeFile(fileName);
+                // Publish the uploaded file into the Files area first. The returned descriptor carries the physical
+                // file together with its download URL, so the record below is filled from a single consistent source
+                // and a failed move is a hard error (never a half-published file).
+                publishedFile = fileUploadService.publishUploadedFile(customer, filePath, true);
+
+                final APKFileDetails apkFileDetails =
+                        this.apkFileAnalyzer.analyzeFile(publishedFile.getFile().getAbsolutePath());
 
                 // If URL is not specified explicitly for new app then set the application URL to reference to that
                 // file
                 if ((application.getUrl() == null || application.getUrl().trim().isEmpty())) {
-                    application.setUrl(FileUtil.createFileUrl(this.baseUrl, customer.getFilesDir(), movedFile.getName()));
+                    application.setUrl(publishedFile.getUrl());
                 }
 
                 application.setPkg(apkFileDetails.getPkg());
                 application.setVersion(apkFileDetails.getVersion());
                 // APK architecture is determined on a previous step, and can be overridden by user's request
                 //application.setArch(apkFileDetails.getArch());
-            } else {
-                log.error("Could not move the uploaded .apk-file {}", filePath);
-                throw new DAOException("Could not move the uploaded .apk-file");
+            }
+
+            insertRecord(application, this.mapper::insertApplication);
+            final ApplicationVersion applicationVersion = new ApplicationVersion(application);
+
+            this.mapper.insertApplicationVersion(applicationVersion);
+            this.mapper.recalculateLatestVersion(application.getId());
+
+            committed = true;
+            return application.getId();
+        } finally {
+            // If record creation failed, the @Transactional DB changes are rolled back; remove the physical file too
+            // so we never leave an orphan file whose record was never committed.
+            if (!committed && publishedFile != null) {
+                fileUploadService.deletePublishedFile(publishedFile);
             }
         }
-
-        insertRecord(application, this.mapper::insertApplication);
-        final ApplicationVersion applicationVersion = new ApplicationVersion(application);
-
-        this.mapper.insertApplicationVersion(applicationVersion);
-        this.mapper.recalculateLatestVersion(application.getId());
-
-        return application.getId();
     }
 
     /**
@@ -395,9 +400,9 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
 
     private void removeVersionApk(Customer customer, Integer id, String url) {
         if (url != null && !url.trim().isEmpty()) {
-            final String apkFile = FileUtil.translateURLToLocalFilePath(customer, url, baseUrl);
+            final String apkFile = fileUploadService.resolveUrlToRelativePath(customer, url);
             if (apkFile != null) {
-                final boolean deleted = FileUtil.deleteFile(customer, filesDirectory, apkFile);
+                final boolean deleted = fileUploadService.deletePublishedFile(customer, apkFile);
                 if (!deleted) {
                     log.warn("Could not delete the APK-file {} related to deleted application version #{}", apkFile, id);
                 }
@@ -712,7 +717,11 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
 
             turnApplicationIntoCommon_Transaction(id, filesToCopy);
 
-            // Move the files from affected versions
+            // The version URLs were committed inside the transaction above; now move the physical files so the
+            // committed metadata is backed by real files. Each move is verified (FileUploadService#migrateFileVerified):
+            // a benign situation (target already present, or nothing to move) is skipped, while a genuine failure is
+            // logged and collected so the resulting record/file inconsistency is reported rather than silently ignored.
+            final List<String> failures = new ArrayList<>();
             filesToCopy.forEach((currentAppFile, newAppFile) -> {
                 if (newAppFile.exists()) {
                     log.warn("Skip copying file: {} -> {} since the target file already exists",
@@ -726,34 +735,22 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
                 } else {
                     log.debug("Copying file: {} -> {}...", currentAppFile.getAbsolutePath(), newAppFile.getAbsolutePath());
                     try {
-                        Path newAppFileDir = newAppFile.toPath().getParent();
-                        newAppFileDir = Files.createDirectories(newAppFileDir);
-                        if (!Files.exists(newAppFileDir)) {
-                            log.error("Couldn't create a directory '{}' in files area for Master-customer account",
-                                    newAppFileDir.toAbsolutePath());
-                        } else {
-                            Files.copy(currentAppFile.toPath(), newAppFile.toPath());
-                            deleteAppFile(currentAppFile);
-                        }
-                    } catch (IOException e) {
-                        log.error("Failed to copy file: {} -> {} due to unexpected error. The process continues.",
-                                currentAppFile.getAbsolutePath(), newAppFile.getAbsolutePath());
+                        fileUploadService.migrateFileVerified(currentAppFile, newAppFile);
+                    } catch (RuntimeException e) {
+                        log.error("Failed to migrate file: {} -> {}. The version record now references a file that " +
+                                        "was not moved; run the file check task to repair. The process continues.",
+                                currentAppFile.getAbsolutePath(), newAppFile.getAbsolutePath(), e);
+                        failures.add(currentAppFile.getAbsolutePath() + " -> " + newAppFile.getAbsolutePath());
                     }
                 }
             });
+
+            if (!failures.isEmpty()) {
+                log.error("Turning application #{} into common left {} file(s) unmigrated; the corresponding version " +
+                        "URLs now point at files that were not moved: {}", id, failures.size(), failures);
+            }
         } else {
             throw SecurityException.onAdminDataAccessViolation("turn application into common");
-        }
-    }
-
-    private void deleteAppFile(File appFile) {
-        final boolean deleted = appFile.delete();
-        if (deleted) {
-            log.info("Deleted the file {} when turning application to common",
-                    appFile.getAbsolutePath());
-        } else {
-            log.error("Failed to delete the file {} when turning application to common",
-                    appFile.getAbsolutePath());
         }
     }
 
@@ -870,25 +867,24 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
         final AtomicReference<String> appPkg = new AtomicReference<>();
 
         final String filePath = applicationVersion.getFilePath();
-        if (filePath != null && !filePath.trim().isEmpty()) {
-            final int customerId = SecurityContext.get().getCurrentUser().get().getCustomerId();
-            Customer customer = customerDAO.findById(customerId);
+        FileUploadService.PublishedFile publishedFile = null;
+        boolean committed = false;
+        try {
+            if (filePath != null && !filePath.trim().isEmpty()) {
+                final int customerId = SecurityContext.get().getCurrentUser().get().getCustomerId();
+                Customer customer = customerDAO.findById(customerId);
 
-            File movedFile = null;
-            try {
-                movedFile = FileUtil.moveFile(customer, filesDirectory, null, filePath);
-            } catch (FileExistsException e) {
-                FileUtil.deleteFile(customer, filesDirectory, FileUtil.getNameFromTmpPath(filePath));
-                movedFile = FileUtil.moveFile(customer, filesDirectory, null, filePath);
-            }
-            if (movedFile != null) {
-                final String fileName = movedFile.getAbsolutePath();
-                final APKFileDetails apkFileDetails = this.apkFileAnalyzer.analyzeFile(fileName);
+                // Publish the uploaded file into the Files area first, so the version URL and the physical file are
+                // derived from a single consistent source and a failed move is a hard error.
+                publishedFile = fileUploadService.publishUploadedFile(customer, filePath, true);
+
+                final APKFileDetails apkFileDetails =
+                        this.apkFileAnalyzer.analyzeFile(publishedFile.getFile().getAbsolutePath());
 
                 // If URL is not specified explicitly for new app then set the application URL to reference to that
                 // file
                 if ((applicationVersion.getUrl() == null || applicationVersion.getUrl().trim().isEmpty())) {
-                    String url = FileUtil.createFileUrl(this.baseUrl, customer.getFilesDir(), movedFile.getName());
+                    String url = publishedFile.getUrl();
                     // Here we check applicationVersion.getArch() because the admin may wish to override
                     // the automatic selection
                     if (StringUtil.isEmpty(applicationVersion.getArch())) {
@@ -904,92 +900,82 @@ public class ApplicationDAO extends AbstractLinkedDAO<Application, ApplicationCo
                 }
 
                 applicationVersion.setVersion(apkFileDetails.getVersion());
-            } else {
-                log.error("Could not move the uploaded .apk-file {}", filePath);
-                throw new DAOException("Could not move the uploaded .apk-file");
             }
-        }
 
-        final Application existingApplication = findById(applicationVersion.getApplicationId());
-        if (existingApplication == null) {
-            throw new DAOException("The requested application does not exist: #" + applicationVersion.getApplicationId());
-        }
-
-        if (existingApplication.isCommonApplication()) {
-            if (!SecurityContext.get().isSuperAdmin()) {
-                throw new CommonAppAccessException(
-                        existingApplication.getPkg(), SecurityContext.get().getCurrentCustomerId().get()
-                );
+            final Application existingApplication = findById(applicationVersion.getApplicationId());
+            if (existingApplication == null) {
+                throw new DAOException("The requested application does not exist: #" + applicationVersion.getApplicationId());
             }
-        }
 
-        // Check the version package id against application's package id - they must be the same
-        if (appPkg.get() != null) {
-            if (!existingApplication.getPkg().equals(appPkg.get())) {
-                throw new ApplicationVersionPackageMismatchException(appPkg.get(), existingApplication.getPkg());
+            if (existingApplication.isCommonApplication()) {
+                if (!SecurityContext.get().isSuperAdmin()) {
+                    throw new CommonAppAccessException(
+                            existingApplication.getPkg(), SecurityContext.get().getCurrentCustomerId().get()
+                    );
+                }
             }
-        }
+
+            // Check the version package id against application's package id - they must be the same
+            if (appPkg.get() != null) {
+                if (!existingApplication.getPkg().equals(appPkg.get())) {
+                    throw new ApplicationVersionPackageMismatchException(appPkg.get(), existingApplication.getPkg());
+                }
+            }
 
 //        guardDowngradeAppVersion(existingApplication, applicationVersion);
 
-        // The user may wish to add the same application and version when he moves
-        // the application from h-mdm.com to his own server
-        int duplicateVersionId = getDuplicateAppVersion(existingApplication, applicationVersion);
-        if (duplicateVersionId > 0) {
-            applicationVersion.setId(duplicateVersionId);
-            ApplicationVersion existingVersion = this.mapper.findVersionById(duplicateVersionId);
-            // If a user added APK for another architecture, keep previous architecture
-            if (applicationVersion.isSplit()) {
-                if (StringUtil.isEmpty(applicationVersion.getUrlArmeabi())) {
-                    applicationVersion.setUrlArmeabi(existingVersion.getUrlArmeabi());
+            // The user may wish to add the same application and version when he moves
+            // the application from h-mdm.com to his own server
+            int duplicateVersionId = getDuplicateAppVersion(existingApplication, applicationVersion);
+            if (duplicateVersionId > 0) {
+                applicationVersion.setId(duplicateVersionId);
+                ApplicationVersion existingVersion = this.mapper.findVersionById(duplicateVersionId);
+                // If a user added APK for another architecture, keep previous architecture
+                if (applicationVersion.isSplit()) {
+                    if (StringUtil.isEmpty(applicationVersion.getUrlArmeabi())) {
+                        applicationVersion.setUrlArmeabi(existingVersion.getUrlArmeabi());
+                    }
+                    if (StringUtil.isEmpty(applicationVersion.getUrlArm64())) {
+                        applicationVersion.setUrlArm64(existingVersion.getUrlArm64());
+                    }
                 }
-                if (StringUtil.isEmpty(applicationVersion.getUrlArm64())) {
-                    applicationVersion.setUrlArm64(existingVersion.getUrlArm64());
-                }
+                this.mapper.updateApplicationVersion(applicationVersion);
+            } else {
+                this.mapper.insertApplicationVersion(applicationVersion);
+                this.mapper.recalculateLatestVersion(existingApplication.getId());
             }
-            this.mapper.updateApplicationVersion(applicationVersion);
-        } else {
-            this.mapper.insertApplicationVersion(applicationVersion);
-            this.mapper.recalculateLatestVersion(existingApplication.getId());
-        }
 
-        // Auto update the configurations if the created application version becomes the latest version for application
-        final Application refreshedExistingApplication = findById(applicationVersion.getApplicationId());
-        final Integer latestVersionId = refreshedExistingApplication.getLatestVersion();
-        if (latestVersionId != null && latestVersionId.equals(applicationVersion.getId())) {
-            doAutoUpdateToApplicationVersion(applicationVersion);
-        }
+            // Auto update the configurations if the created application version becomes the latest version for application
+            final Application refreshedExistingApplication = findById(applicationVersion.getApplicationId());
+            final Integer latestVersionId = refreshedExistingApplication.getLatestVersion();
+            if (latestVersionId != null && latestVersionId.equals(applicationVersion.getId())) {
+                doAutoUpdateToApplicationVersion(applicationVersion);
+            }
 
-        return applicationVersion.getId();
+            committed = true;
+            return applicationVersion.getId();
+        } finally {
+            // Compensate for a failed (and therefore rolled-back) version creation by removing the physical file
+            // that was published above, so a rollback never leaves an orphan APK behind.
+            if (!committed && publishedFile != null) {
+                fileUploadService.deletePublishedFile(publishedFile);
+            }
+        }
     }
 
     private String translateAppVersionUrl(ApplicationVersion appVersion,
                                           Customer appCustomer,
                                           Customer newAppCustomer,
                                           Map<File, File> fileToCopyCollector) {
-        // Update application URL and link it to new customer and copy application file to master
-        // customer
-        final String currentApplicationUrl = appVersion.getUrl();
-        if (currentApplicationUrl != null) {
-            // Here customer.getFilesDir() is not supposed to be empty because
-            // this method works in a multi-tenant mode only
-            final String currentCustomerFileDirUrlPart = "/" + appCustomer.getFilesDir() + "/";
-            int pos = currentApplicationUrl.indexOf(currentCustomerFileDirUrlPart);
-            if (pos >= 0) {
-
-                final String relativeFilePath = currentApplicationUrl.substring(pos + 1);
-                final File newCustomerFilesBaseDir = new File(this.filesDirectory, newAppCustomer.getFilesDir());
-
-                final File currentAppFile = new File(this.filesDirectory, relativeFilePath);
-                final File newAppFile = new File(newCustomerFilesBaseDir, relativeFilePath);
-
-                fileToCopyCollector.put(currentAppFile, newAppFile);
-
-                return this.baseUrl + "/files/" + newAppCustomer.getFilesDir() + "/" + relativeFilePath;
-            } else {
-                log.warn("Invalid application URL does not contain the base directory for customer files: {}" ,
-                        currentApplicationUrl);
-            }
+        // Update application URL and link it to new customer and copy application file to master customer.
+        // The new URL and the source/target files are derived from a single place
+        // (FileUploadService#resolveMigration), so the URL committed to the record below cannot drift from
+        // the file that is actually moved afterwards.
+        final FileUploadService.MigrationTarget migration =
+                fileUploadService.resolveMigration(appCustomer, newAppCustomer, appVersion.getUrl());
+        if (migration != null) {
+            fileToCopyCollector.put(migration.getSource(), migration.getDest());
+            return migration.getNewUrl();
         }
 
         return null;

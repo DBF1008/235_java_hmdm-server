@@ -231,6 +231,15 @@ public class UploadedFile implements Serializable, CustomerData {
         }
     }
 
+    /**
+     * <p>Builds the public download URL for this file. This implements the same URL contract as
+     * {@code com.hmdm.service.FileUploadService#buildFileUrl} (a domain object cannot depend on the service directly);
+     * keep the two in sync.</p>
+     *
+     * @param baseUrl the base URL of the application.
+     * @param customer the customer account this file belongs to.
+     * @return the public download URL for this file.
+     */
     public String getUrl(String baseUrl, Customer customer) {
         if (this.isExternal()) {
             return this.externalUrl;

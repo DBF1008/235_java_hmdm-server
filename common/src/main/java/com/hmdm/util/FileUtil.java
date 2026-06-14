@@ -23,18 +23,28 @@ package com.hmdm.util;
 
 import com.hmdm.persistence.domain.Application;
 import com.hmdm.persistence.domain.Customer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.*;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 /**
- * <p>An utility class for managing the files on local file system.</p>
+ * <p>An utility class with low-level primitives for managing the files on local file system.</p>
+ *
+ * <p>For application code, prefer {@link com.hmdm.service.FileUploadService}, which is the single convergence point
+ * for publishing, relocating, exposing and inspecting files: it derives a file's physical location and its download
+ * URL from one place, verifies file operations, and reports failures explicitly. The static helpers here remain the
+ * low-level layer that the service delegates to.</p>
  *
  * @author isv
+ * @see com.hmdm.service.FileUploadService
  */
 public final class FileUtil {
     private static final String TEMP_FILE_DELIMITER = "1111111";
+
+    private static final Logger logger = LoggerFactory.getLogger(FileUtil.class);
 
     /**
      * <p>Constructs new <code>FileUtil</code> instance. This implementation does nothing.</p>
@@ -104,6 +114,7 @@ public final class FileUtil {
      * @param tmpFilePath a path to a temorary file to be moved.
      * @return a file referencing the moved file if operation was successful; <code>null</code> otherwise.
      * @throws FileExistsException if file already exists in
+     * @see com.hmdm.service.FileUploadService#publishUploadedFile(com.hmdm.persistence.domain.Customer, String, String, String, boolean)
      */
     public static File moveFile(Customer customer, String filesDirectory, String localPath, String tmpFilePath, String newName) {
         File localFile = new File(tmpFilePath);
@@ -131,20 +142,38 @@ public final class FileUtil {
         } else {
             // Try to copy and delete because rename can fail due to different file systems
             // For example, on Tomcat 9 renaming from /tmp to /var/lib/tomcat9/work will fail due to sandbox restrictions
-            try {
-                FileInputStream inputStream = new FileInputStream(localFile);
+            try (FileInputStream inputStream = new FileInputStream(localFile)) {
+                final long sourceLength = localFile.length();
                 writeToFile(inputStream, file.getAbsolutePath());
-                inputStream.close();
+                // writeToFile() swallows IOException, so a partial/failed copy may look successful. Verify that the
+                // destination matches the source before deleting the source, so a "successful" move can never leave a
+                // truncated file in place.
+                if (!file.exists() || file.length() != sourceLength) {
+                    logger.error("Failed to copy uploaded file {} to {}: size mismatch (expected {} bytes, got {}). " +
+                                    "Source file is kept.",
+                            localFile.getAbsolutePath(), file.getAbsolutePath(), sourceLength,
+                            file.exists() ? file.length() : -1L);
+                    if (file.exists() && !file.delete()) {
+                        logger.error("Failed to remove the incomplete copy {}", file.getAbsolutePath());
+                    }
+                    return null;
+                }
                 localFile.delete();
                 return file;
             } catch (Exception e) {
-                e.printStackTrace();
+                logger.error("Failed to copy uploaded file {} to {}. Source file is kept.",
+                        localFile.getAbsolutePath(), file.getAbsolutePath(), e);
                 return null;
             }
         }
 
     }
 
+    /**
+     * <p>Translates a public file download URL into a path relative to the customer's files area.</p>
+     *
+     * @see com.hmdm.service.FileUploadService#resolveUrlToRelativePath(com.hmdm.persistence.domain.Customer, String)
+     */
     public static String translateURLToLocalFilePath(Customer customer, String url, String baseUrl) {
         final String prefixWithoutCustomer = baseUrl + "/files/";
         String prefix = prefixWithoutCustomer;
@@ -165,6 +194,7 @@ public final class FileUtil {
      * @param baseDirectory a path to a base directory where all application files are stored..
      * @param path a path to a file to delete.
      * @return <code>true</code> if file was deleted successfully; <code>false</code> otherwise.
+     * @see com.hmdm.service.FileUploadService#deletePublishedFile(com.hmdm.persistence.domain.Customer, String)
      */
     public static boolean deleteFile(Customer customer, String baseDirectory, String path) {
         String filePath = String.format("%s/%s", baseDirectory, customer.getFilesDir()).replace("/", File.separator);
@@ -172,6 +202,11 @@ public final class FileUtil {
         return fileToDelete.delete();
     }
 
+    /**
+     * <p>Builds the public download URL for a file stored in the customer's files area.</p>
+     *
+     * @see com.hmdm.service.FileUploadService#buildFileUrl(com.hmdm.persistence.domain.Customer, String)
+     */
     public static String createFileUrl(String baseUrl, String customerDir, String fileName) {
         // TODO: Use files.directory from XML config!
         String url = baseUrl + "/files/";
